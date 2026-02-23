@@ -8,6 +8,14 @@
 - system_prompt: Claudeへのシステムプロンプト
 - user_prompt_template: ユーザープロンプトのテンプレート文字列（{field_name}形式）
 """
+import os
+
+from excel_loader import format_examples_for_prompt, load_shoken_examples
+
+# Excelファイルから所見サンプルを読み込む（スクリプトと同じディレクトリを参照）
+_EXCEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "コピー5-1所見.xls")
+_shoken_examples = load_shoken_examples(_EXCEL_PATH, max_examples=5)
+_examples_text = format_examples_for_prompt(_shoken_examples)
 
 TEMPLATES = {
     "blog": {
@@ -177,5 +185,57 @@ TEMPLATES = {
         ],
         "system_prompt": "{system_instruction}",
         "user_prompt_template": "{request}",
+    },
+    "shoken": {
+        "name": "通知表の所見",
+        "description": "小学校の通知表向けの所見を生成します（参考例文を使用）",
+        "fields": [
+            {
+                "name": "grade",
+                "label": "学年",
+                "description": "生徒の学年（例: 3年生、5年生）",
+            },
+            {
+                "name": "activities",
+                "label": "係・委員会・行事での様子",
+                "description": (
+                    "係や委員会・行事での具体的な活動内容"
+                    "（例: 給食係として毎日丁寧に配膳準備を行い他の係の子と協力して取り組んだ）"
+                ),
+            },
+            {
+                "name": "subject_learning",
+                "label": "学習面での様子",
+                "description": (
+                    "教科での頑張りや具体的なエピソード"
+                    "（例: 算数の分数の授業では難しい問題も諦めずに取り組み友達に解き方を説明できた）"
+                ),
+            },
+            {
+                "name": "target_length",
+                "label": "文字数目安",
+                "description": "所見の目安文字数（例: 150字、170字、180字）",
+            },
+        ],
+        "system_prompt": (
+            "あなたは小学校の担任教師です。通知表の所見文を書いています。\n"
+            "以下のルールを守って所見を書いてください。\n\n"
+            "【所見のルール】\n"
+            "- 全角スペース1文字（　）で書き始める\n"
+            "- 前向きで温かみのある表現を使う\n"
+            "- 具体的なエピソードや場面を記述する\n"
+            "- 「～できました」「～がすばらしいです」「～の姿が印象的でした」などの肯定的な表現を使う\n"
+            "- {target_length}程度（前後15字以内）に収める\n"
+            "- 2〜3文で構成する\n"
+            "- 前半：係・委員会・行事など生活面での様子\n"
+            "- 後半：学習面での具体的な様子\n"
+            + _examples_text
+        ),
+        "user_prompt_template": (
+            "以下の情報をもとに{grade}の通知表の所見を書いてください。\n\n"
+            "係・委員会・行事での様子:\n{activities}\n\n"
+            "学習面での様子:\n{subject_learning}\n\n"
+            "所見文のみを出力してください（説明や前置きは不要です）。"
+        ),
     },
 }
