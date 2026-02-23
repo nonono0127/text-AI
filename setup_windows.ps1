@@ -9,6 +9,8 @@ Write-Host "セットアップを開始します..." -ForegroundColor Cyan
 @"
 anthropic>=0.40.0
 xlrd>=2.0.1
+openpyxl>=3.1.0
+tkinterdnd2>=0.3.0
 "@ | Set-Content -Encoding UTF8 "requirements.txt"
 
 # --- excel_loader.py ---
@@ -262,4 +264,13 @@ Write-Host ""
 Write-Host "次のステップ:" -ForegroundColor Yellow
 Write-Host "  1. このフォルダに「コピー5-1所見.xls」をコピーしてください"
 Write-Host "  2. pip install -r requirements.txt"
-Write-Host "  3. python main.py"
+Write-Host ""
+Write-Host "【GUIツール（Excel一括生成）を使う場合】" -ForegroundColor Cyan
+Write-Host "  3a. python shoken_app.py"
+Write-Host "      → ウィンドウが開くのでExcelをドロップして所見を一括生成"
+Write-Host "      → 入力Excel: A=学年 B=係・行事 C=学習面 D=文字数目安"
+Write-Host "      → 出力Excel: 元ファイル名_生成済み.xlsx のE列に所見が書き込まれます"
+Write-Host ""
+Write-Host "【コマンドラインで使う場合】" -ForegroundColor Cyan
+Write-Host "  3b. `$env:ANTHROPIC_API_KEY = 'sk-ant-（あなたのキー）'"
+Write-Host "      python main.py"
