@@ -15,6 +15,8 @@ import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
+import re
+
 import anthropic
 import openpyxl
 from openpyxl.styles import Alignment
@@ -38,6 +40,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from templates import TEMPLATES
 
 SHOKEN = TEMPLATES["shoken"]
+
+
+def calc_length_range(target_length_str: str) -> tuple[int, int]:
+    """'170字' → (155, 185) のように目標文字数から±15の範囲を返す"""
+    m = re.search(r'\d+', str(target_length_str))
+    target = int(m.group()) if m else 170
+    return target - 15, target + 15
 
 
 class ShokenApp:
@@ -344,14 +353,19 @@ class ShokenApp:
 
     def _call_api(self, client, row):
         """Claude APIを呼び出して所見文を生成して返す"""
+        min_len, max_len = calc_length_range(row["target_length"])
         system_prompt = SHOKEN["system_prompt"].format(
-            target_length=row["target_length"]
+            target_length=row["target_length"],
+            min_length=min_len,
+            max_length=max_len,
         )
         user_prompt = SHOKEN["user_prompt_template"].format(
             grade=row["grade"],
             activities=row["activities"],
             subject_learning=row["subject_learning"],
             target_length=row["target_length"],
+            min_length=min_len,
+            max_length=max_len,
         )
         generated = []
         with client.messages.stream(

@@ -11,6 +11,7 @@
 
 import io
 import os
+import re
 import sys
 
 import anthropic
@@ -67,16 +68,28 @@ def read_excel_from_bytes(file_bytes: bytes, filename: str, start_row: int):
     return wb, ws, rows_data
 
 
+def calc_length_range(target_length_str: str) -> tuple[int, int]:
+    """'170字' → (155, 185) のように目標文字数から±15の範囲を返す"""
+    m = re.search(r'\d+', str(target_length_str))
+    target = int(m.group()) if m else 170
+    return target - 15, target + 15
+
+
 def call_api(client: anthropic.Anthropic, row: dict) -> str:
     """Claude APIを呼び出して所見文を生成して返す"""
+    min_len, max_len = calc_length_range(row["target_length"])
     system_prompt = SHOKEN["system_prompt"].format(
-        target_length=row["target_length"]
+        target_length=row["target_length"],
+        min_length=min_len,
+        max_length=max_len,
     )
     user_prompt = SHOKEN["user_prompt_template"].format(
         grade=row["grade"],
         activities=row["activities"],
         subject_learning=row["subject_learning"],
         target_length=row["target_length"],
+        min_length=min_len,
+        max_length=max_len,
     )
     generated = []
     with client.messages.stream(
