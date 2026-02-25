@@ -13,6 +13,7 @@ Claude APIを使用して、選択したテンプレートに基づいて
 """
 
 import os
+import re
 import sys
 
 import anthropic
@@ -105,6 +106,13 @@ def run_generation(client: anthropic.Anthropic, template_key: str) -> str:
 
     # フィールド入力を収集
     inputs = collect_field_inputs(template["fields"])
+
+    # 文字数範囲を計算（target_length が含まれるテンプレート用）
+    if "target_length" in inputs:
+        m = re.search(r'\d+', inputs["target_length"])
+        target = int(m.group()) if m else 170
+        inputs["min_length"] = target - 15
+        inputs["max_length"] = target + 15
 
     # プロンプトを構築
     system_prompt = template["system_prompt"].format(**inputs)

@@ -235,13 +235,14 @@ TEMPLATES = {
             "【学年別表記】\n"
             "- 1〜2年生：全文ひらがなで書く（漢字不使用）\n"
             "- 3年生以上：漢字仮名交じり文\n\n"
-            "【文字数】{target_length}程度（前後15字以内）\n"
+            "【文字数】必ず{min_length}〜{max_length}字の範囲で書くこと\n"
             + _examples_text
         ),
         "user_prompt_template": (
             "以下の情報をもとに{grade}の通知表の所見を書いてください。\n\n"
             "係・委員会・行事での様子:\n{activities}\n\n"
             "学習面での様子:\n{subject_learning}\n\n"
+            "文字数は必ず{min_length}〜{max_length}字の範囲に収めてください。\n"
             "所見文のみを出力してください（説明や前置きは不要です）。"
         ),
     },
