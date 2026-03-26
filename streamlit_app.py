@@ -4,15 +4,16 @@
 
 使い方:
     streamlit run streamlit_app.py
-
-必要な環境変数（任意）:
-    ANTHROPIC_API_KEY: Anthropic APIキー（画面上でも入力可能）
 """
 
 import io
 import os
 import re
+import secrets
+import smtplib
+import ssl
 import sys
+import time
 
 import anthropic
 import openpyxl
@@ -23,6 +24,63 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from templates import TEMPLATES
 
 SHOKEN = TEMPLATES["shoken"]
+
+
+def send_otp_email(to_email: str, otp: str) -> None:
+    smtp_email = st.secrets["SMTP_EMAIL"]
+    smtp_password = st.secrets["SMTP_PASSWORD"]
+    subject = "所見生成ツール ワンタイムパスワード"
+    body = f"ワンタイムパスワード: {otp}\n\n有効期限は10分です。"
+    message = f"Subject: {subject}\nTo: {to_email}\n\n{body}"
+    context = ssl.create_default_context()
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as server:
+        server.login(smtp_email, smtp_password)
+        server.sendmail(smtp_email, to_email, message.encode("utf-8"))
+
+
+def auth_screen() -> bool:
+    if st.session_state.get("authenticated"):
+        return True
+
+    st.title("所見生成ツール")
+    allowed_emails = list(st.secrets.get("ALLOWED_EMAILS", []))
+
+    if st.session_state.get("otp_sent"):
+        st.info(f"{st.session_state.otp_email} にワンタイムパスワードを送信しました。")
+        otp_input = st.text_input("ワンタイムパスワード（6桁）")
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("確認", use_container_width=True):
+                if time.time() > st.session_state.otp_expiry:
+                    st.error("有効期限が切れました。もう一度メールアドレスを入力してください。")
+                    st.session_state.otp_sent = False
+                    st.rerun()
+                elif otp_input == st.session_state.otp_code:
+                    st.session_state.authenticated = True
+                    st.rerun()
+                else:
+                    st.error("パスワードが正しくありません。")
+        with col2:
+            if st.button("メールアドレスを変更", use_container_width=True):
+                st.session_state.otp_sent = False
+                st.rerun()
+    else:
+        email = st.text_input("メールアドレス")
+        if st.button("送信", use_container_width=True):
+            if email in allowed_emails:
+                otp = str(secrets.randbelow(900000) + 100000)
+                try:
+                    send_otp_email(email, otp)
+                    st.session_state.otp_code = otp
+                    st.session_state.otp_email = email
+                    st.session_state.otp_expiry = time.time() + 600
+                    st.session_state.otp_sent = True
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"メール送信に失敗しました: {e}")
+            else:
+                st.error("このメールアドレスは登録されていません。")
+    return False
 
 
 def read_excel_from_bytes(file_bytes: bytes, filename: str, start_row: int):
@@ -106,17 +164,16 @@ def call_api(client: anthropic.Anthropic, row: dict) -> str:
 def main():
     st.set_page_config(page_title="所見生成ツール", page_icon="📝", layout="centered")
 
+    if not auth_screen():
+        return
+
+    api_key = st.secrets.get("ANTHROPIC_API_KEY", os.environ.get("ANTHROPIC_API_KEY", ""))
+    if not api_key:
+        st.error("APIキーが設定されていません。管理者に連絡してください。")
+        return
+
     st.title("📝 所見生成ツール")
     st.caption("ExcelファイルをアップロードするとE列に通知表の所見を自動生成します")
-
-    # --- APIキー ---
-    with st.expander("🔑 APIキー設定", expanded=not os.environ.get("ANTHROPIC_API_KEY")):
-        api_key = st.text_input(
-            "Anthropic APIキー",
-            value=os.environ.get("ANTHROPIC_API_KEY", ""),
-            type="password",
-            help="https://console.anthropic.com/settings/keys で取得できます",
-        )
 
     st.divider()
 
@@ -164,7 +221,7 @@ def main():
         return
 
     if not api_key:
-        st.warning("APIキーを入力してください。")
+        st.error("APIキーが設定されていません。")
         return
 
     if not generate_btn:
