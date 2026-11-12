@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from templates import TEMPLATES
 
 SHOKEN = TEMPLATES["shoken"]
+SOGOTEKI = TEMPLATES["sogoteki"]
 
 
 def send_otp_email(to_email: str, otp: str) -> None:
@@ -83,19 +84,18 @@ def auth_screen() -> bool:
     return False
 
 
-def read_excel_from_bytes(file_bytes: bytes, filename: str, start_row: int):
-    """Excelバイト列を読み込んでWorkbook/Worksheet/行データリストを返す"""
+def _load_workbook_from_bytes(file_bytes: bytes, filename: str):
+    """バイト列からWorksheetを返す（xls/xlsx両対応）"""
     ext = os.path.splitext(filename)[1].lower()
-
     if ext == ".xlsx":
         wb = openpyxl.load_workbook(io.BytesIO(file_bytes))
-        ws = wb.active
+        return wb, wb.active
     elif ext == ".xls":
         try:
             import xlrd
         except ImportError:
             st.error(".xlsファイルには xlrd が必要です: pip install xlrd>=2.0.1")
-            return None, None, []
+            return None, None
         xls = xlrd.open_workbook(file_contents=file_bytes)
         xsh = xls.sheet_by_index(0)
         wb = openpyxl.Workbook()
@@ -103,8 +103,16 @@ def read_excel_from_bytes(file_bytes: bytes, filename: str, start_row: int):
         for r in range(xsh.nrows):
             for c in range(xsh.ncols):
                 ws.cell(r + 1, c + 1, xsh.cell(r, c).value)
+        return wb, ws
     else:
         st.error("xlsx または xls 形式のファイルを選択してください。")
+        return None, None
+
+
+def read_excel_from_bytes(file_bytes: bytes, filename: str, start_row: int):
+    """Excelバイト列を読み込んで通知表所見用の行データリストを返す"""
+    wb, ws = _load_workbook_from_bytes(file_bytes, filename)
+    if wb is None:
         return None, None, []
 
     rows_data = []
@@ -126,6 +134,31 @@ def read_excel_from_bytes(file_bytes: bytes, filename: str, start_row: int):
     return wb, ws, rows_data
 
 
+def read_sogoteki_excel(file_bytes: bytes, filename: str, start_row: int):
+    """Excelバイト列を読み込んで総合的な学習用の行データリストを返す"""
+    wb, ws = _load_workbook_from_bytes(file_bytes, filename)
+    if wb is None:
+        return None, None, []
+
+    rows_data = []
+    for r in range(start_row, ws.max_row + 1):
+        grade = ws.cell(r, 1).value
+        research = ws.cell(r, 2).value
+        experience = ws.cell(r, 3).value
+        target_len = ws.cell(r, 4).value
+        existing_e = ws.cell(r, 5).value
+        if grade or research or experience:
+            rows_data.append({
+                "row_idx": r,
+                "grade": str(grade or "6年生"),
+                "research_content": str(research or ""),
+                "experience": str(experience or ""),
+                "target_length": str(target_len or "90字"),
+                "existing_e": existing_e,
+            })
+    return wb, ws, rows_data
+
+
 def calc_length_range(target_length_str: str) -> tuple[int, int]:
     """'170字' → (155, 185) のように目標文字数から±15の範囲を返す"""
     m = re.search(r'\d+', str(target_length_str))
@@ -134,7 +167,7 @@ def calc_length_range(target_length_str: str) -> tuple[int, int]:
 
 
 def call_api(client: anthropic.Anthropic, row: dict) -> str:
-    """Claude APIを呼び出して所見文を生成して返す"""
+    """Claude APIを呼び出して通知表所見文を生成して返す"""
     min_len, max_len = calc_length_range(row["target_length"])
     system_prompt = SHOKEN["system_prompt"].format(
         target_length=row["target_length"],
@@ -161,23 +194,100 @@ def call_api(client: anthropic.Anthropic, row: dict) -> str:
     return "".join(generated).strip()
 
 
-def main():
-    st.set_page_config(page_title="所見生成ツール", page_icon="📝", layout="centered")
+def call_sogoteki_api(client: anthropic.Anthropic, row: dict) -> str:
+    """Claude APIを呼び出して総合的な学習の所見文を生成して返す"""
+    min_len, max_len = calc_length_range(row["target_length"])
+    system_prompt = SOGOTEKI["system_prompt"].format(
+        min_length=min_len,
+        max_length=max_len,
+    )
+    user_prompt = SOGOTEKI["user_prompt_template"].format(
+        grade=row["grade"],
+        research_content=row["research_content"],
+        experience=row["experience"],
+        min_length=min_len,
+        max_length=max_len,
+    )
+    generated = []
+    with client.messages.stream(
+        model="claude-opus-4-6",
+        max_tokens=600,
+        system=system_prompt,
+        messages=[{"role": "user", "content": user_prompt}],
+    ) as stream:
+        for text in stream.text_stream:
+            generated.append(text)
+    return "".join(generated).strip()
 
-    if not auth_screen():
+
+def _run_generation(client, uploaded_file, start_row, overwrite, read_fn, api_fn, out_col=5):
+    """共通の生成・ダウンロード処理"""
+    file_bytes = uploaded_file.read()
+    wb, ws, rows_data = read_fn(file_bytes, uploaded_file.name, start_row)
+    if wb is None:
         return
 
-    api_key = st.secrets.get("ANTHROPIC_API_KEY", os.environ.get("ANTHROPIC_API_KEY", ""))
-    if not api_key:
-        st.error("APIキーが設定されていません。管理者に連絡してください。")
+    total = len(rows_data)
+    if total == 0:
+        st.warning("処理対象の行が見つかりませんでした。A〜D列にデータが入力されているか確認してください。")
         return
 
-    st.title("📝 所見生成ツール")
-    st.caption("ExcelファイルをアップロードするとE列に通知表の所見を自動生成します")
+    st.info(f"処理対象: {total} 行")
 
-    st.divider()
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    log_area = st.empty()
+    log_lines = []
+    ok = skip = err = 0
 
-    # --- Excelフォーマット説明 ---
+    for i, row in enumerate(rows_data):
+        ridx = row["row_idx"]
+        if row["existing_e"] and not overwrite:
+            log_lines.append(f"行{ridx}: スキップ（E列に既存データあり）")
+            skip += 1
+        else:
+            status_text.text(f"行{ridx} を処理中... ({i + 1}/{total})")
+            log_lines.append(f"行{ridx}: 生成中...")
+            log_area.text("\n".join(log_lines[-20:]))
+            try:
+                text = api_fn(client, row)
+                ws.cell(ridx, out_col, text).alignment = Alignment(wrap_text=True)
+                log_lines.append(f"行{ridx}: 完了 ({len(text)}字)")
+                ok += 1
+            except anthropic.AuthenticationError:
+                st.error("APIキーが無効です。")
+                return
+            except Exception as e:
+                log_lines.append(f"行{ridx}: エラー - {e}")
+                err += 1
+        progress_bar.progress((i + 1) / total)
+        log_area.text("\n".join(log_lines[-20:]))
+
+    status_text.empty()
+    log_area.text("\n".join(log_lines))
+
+    summary = f"完了: {ok}件生成 / {skip}件スキップ / {err}件エラー"
+    if err == 0:
+        st.success(summary)
+    else:
+        st.warning(summary)
+
+    out_buf = io.BytesIO()
+    wb.save(out_buf)
+    out_buf.seek(0)
+    base_name = os.path.splitext(uploaded_file.name)[0]
+    st.download_button(
+        label="📥 生成済みExcelをダウンロード",
+        data=out_buf,
+        file_name=base_name + "_生成済み.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+        type="primary",
+    )
+
+
+def _tab_shoken(client, api_key):
+    """通知表所見タブの内容"""
     with st.expander("📋 入力Excelの列構成", expanded=False):
         st.markdown("""
 | 列 | 内容 | 例 |
@@ -191,55 +301,91 @@ def main():
 1行目はヘッダー行にして、2行目から児童データを入力してください。
         """)
 
-    # --- ファイルアップロード ---
     uploaded_file = st.file_uploader(
         "Excelファイルをアップロード",
         type=["xlsx", "xls"],
-        help="ドラッグ＆ドロップまたはクリックして選択",
+        key="shoken_upload",
     )
-
-    # --- 設定 ---
     col1, col2 = st.columns(2)
     with col1:
         start_row = st.number_input("開始行", min_value=1, value=2, step=1,
-                                    help="1行目がヘッダーの場合は2")
+                                    help="1行目がヘッダーの場合は2", key="shoken_start")
     with col2:
-        overwrite = st.checkbox("E列の既存データも上書きする", value=False)
+        overwrite = st.checkbox("E列の既存データも上書きする", value=False, key="shoken_overwrite")
 
     st.divider()
 
-    # --- 生成ボタン ---
     generate_btn = st.button(
         "所見を生成する",
         type="primary",
         disabled=(uploaded_file is None or not api_key),
         use_container_width=True,
+        key="shoken_btn",
     )
-
     if uploaded_file is None:
         st.info("Excelファイルをアップロードしてください。")
         return
-
-    if not api_key:
-        st.error("APIキーが設定されていません。")
-        return
-
     if not generate_btn:
         return
+    _run_generation(client, uploaded_file, start_row, overwrite,
+                    read_fn=read_excel_from_bytes, api_fn=call_api)
 
-    # --- 生成処理 ---
-    file_bytes = uploaded_file.read()
-    wb, ws, rows_data = read_excel_from_bytes(file_bytes, uploaded_file.name, start_row)
 
-    if wb is None:
+def _tab_sogoteki(client, api_key):
+    """総合的な学習タブの内容"""
+    with st.expander("📋 入力Excelの列構成", expanded=False):
+        st.markdown("""
+| 列 | 内容 | 例 |
+|---|---|---|
+| **A列** | 学年 | 6年生 |
+| **B列** | 調べた内容（時代・場所） | 室町時代の建造物、鹿苑寺 |
+| **C列** | 体験・気づき・まとめ方 | 金閣が輝く姿に感動した、新聞にまとめた |
+| **D列** | 文字数目安 | 90字 |
+| **E列** | ★生成された所見が書き込まれます | （自動入力） |
+
+1行目はヘッダー行にして、2行目から児童データを入力してください。
+        """)
+
+    uploaded_file = st.file_uploader(
+        "Excelファイルをアップロード",
+        type=["xlsx", "xls"],
+        key="sogoteki_upload",
+    )
+    col1, col2 = st.columns(2)
+    with col1:
+        start_row = st.number_input("開始行", min_value=1, value=2, step=1,
+                                    help="1行目がヘッダーの場合は2", key="sogoteki_start")
+    with col2:
+        overwrite = st.checkbox("E列の既存データも上書きする", value=False, key="sogoteki_overwrite")
+
+    st.divider()
+
+    generate_btn = st.button(
+        "所見を生成する",
+        type="primary",
+        disabled=(uploaded_file is None or not api_key),
+        use_container_width=True,
+        key="sogoteki_btn",
+    )
+    if uploaded_file is None:
+        st.info("Excelファイルをアップロードしてください。")
+        return
+    if not generate_btn:
+        return
+    _run_generation(client, uploaded_file, start_row, overwrite,
+                    read_fn=read_sogoteki_excel, api_fn=call_sogoteki_api)
+
+
+def main():
+    st.set_page_config(page_title="所見生成ツール", page_icon="📝", layout="centered")
+
+    if not auth_screen():
         return
 
-    total = len(rows_data)
-    if total == 0:
-        st.warning("処理対象の行が見つかりませんでした。A〜D列にデータが入力されているか確認してください。")
+    api_key = st.secrets.get("ANTHROPIC_API_KEY", os.environ.get("ANTHROPIC_API_KEY", ""))
+    if not api_key:
+        st.error("APIキーが設定されていません。管理者に連絡してください。")
         return
-
-    st.info(f"処理対象: {total} 行")
 
     try:
         client = anthropic.Anthropic(api_key=api_key)
@@ -247,66 +393,15 @@ def main():
         st.error(f"APIクライアントの初期化に失敗しました: {e}")
         return
 
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    log_area = st.empty()
-    log_lines = []
+    st.title("📝 所見生成ツール")
 
-    ok = skip = err = 0
+    tab1, tab2 = st.tabs(["通知表の所見", "総合的な学習"])
 
-    for i, row in enumerate(rows_data):
-        ridx = row["row_idx"]
+    with tab1:
+        _tab_shoken(client, api_key)
 
-        if row["existing_e"] and not overwrite:
-            log_lines.append(f"行{ridx}: スキップ（E列に既存データあり）")
-            skip += 1
-        else:
-            status_text.text(f"行{ridx} を処理中... ({i + 1}/{total})")
-            log_lines.append(f"行{ridx}: 生成中...")
-            log_area.text("\n".join(log_lines[-20:]))
-
-            try:
-                text = call_api(client, row)
-                ws.cell(ridx, 5, text).alignment = Alignment(wrap_text=True)
-                clen = len(text)
-                log_lines.append(f"行{ridx}: 完了 ({clen}字)")
-                ok += 1
-            except anthropic.AuthenticationError:
-                st.error("APIキーが無効です。正しいキーを入力してください。")
-                return
-            except Exception as e:
-                log_lines.append(f"行{ridx}: エラー - {e}")
-                err += 1
-
-        progress_bar.progress((i + 1) / total)
-        log_area.text("\n".join(log_lines[-20:]))
-
-    status_text.empty()
-    log_area.text("\n".join(log_lines))
-
-    # --- 結果サマリー ---
-    summary = f"完了: {ok}件生成 / {skip}件スキップ / {err}件エラー"
-    if err == 0:
-        st.success(summary)
-    else:
-        st.warning(summary)
-
-    # --- ダウンロード ---
-    out_buf = io.BytesIO()
-    wb.save(out_buf)
-    out_buf.seek(0)
-
-    base_name = os.path.splitext(uploaded_file.name)[0]
-    out_filename = base_name + "_生成済み.xlsx"
-
-    st.download_button(
-        label="📥 生成済みExcelをダウンロード",
-        data=out_buf,
-        file_name=out_filename,
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
-        type="primary",
-    )
+    with tab2:
+        _tab_sogoteki(client, api_key)
 
 
 if __name__ == "__main__":

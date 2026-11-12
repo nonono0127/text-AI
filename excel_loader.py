@@ -4,6 +4,33 @@ Excelファイルから所見サンプルデータを読み込むモジュール
 import os
 
 
+def load_examples_from_column(filepath: str, col_idx: int, max_examples: int = 5) -> list[str]:
+    """任意の列から所見テキストのサンプルを読み込む"""
+    if not os.path.exists(filepath):
+        return []
+    try:
+        import xlrd
+    except ImportError:
+        return []
+    examples = []
+    try:
+        wb = xlrd.open_workbook(filepath)
+        for sheet in wb.sheets():
+            for row_idx in range(1, sheet.nrows):
+                if sheet.ncols > col_idx:
+                    text = str(sheet.cell(row_idx, col_idx).value).strip()
+                    text = text.lstrip("　").strip()
+                    if text and text not in ("", "nan", "0.0") and len(text) > 20:
+                        examples.append(text)
+                if len(examples) >= max_examples:
+                    break
+            if len(examples) >= max_examples:
+                break
+    except Exception:
+        pass
+    return examples
+
+
 def load_shoken_examples(filepath: str, max_examples: int = 5) -> list[str]:
     """
     Excelファイルから所見テキストのサンプルを読み込む。

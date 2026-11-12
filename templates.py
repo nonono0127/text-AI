@@ -10,12 +10,23 @@
 """
 import os
 
-from excel_loader import format_examples_for_prompt, load_shoken_examples
+from excel_loader import format_examples_for_prompt, load_examples_from_column, load_shoken_examples
 
-# Excelファイルから所見サンプルを読み込む（スクリプトと同じディレクトリを参照）
-_EXCEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "コピー5-1所見.xls")
+_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# 通知表所見サンプル
+_EXCEL_PATH = os.path.join(_DIR, "コピー5-1所見.xls")
 _shoken_examples = load_shoken_examples(_EXCEL_PATH, max_examples=5)
 _examples_text = format_examples_for_prompt(_shoken_examples)
+
+# 総合的な学習サンプル（H列=index7）
+_sogoteki_examples: list[str] = []
+for _sogoteki_file in ["sogoteki_sample_6-1.xls", "sogoteki_sample_6-2.xls"]:
+    _path = os.path.join(_DIR, _sogoteki_file)
+    _sogoteki_examples.extend(load_examples_from_column(_path, col_idx=7, max_examples=5))
+    if len(_sogoteki_examples) >= 5:
+        break
+_sogoteki_examples_text = format_examples_for_prompt(_sogoteki_examples[:5])
 
 TEMPLATES = {
     "blog": {
@@ -243,6 +254,59 @@ TEMPLATES = {
             "以下の情報をもとに{grade}の通知表の所見を書いてください。\n\n"
             "係・委員会・行事での様子:\n{activities}\n\n"
             "学習面での様子:\n{subject_learning}\n\n"
+            "文字数は必ず{min_length}〜{max_length}字の範囲に収めてください。\n"
+            "所見文のみを出力してください（説明や前置きは不要です）。"
+        ),
+    },
+    "sogoteki": {
+        "name": "総合的な学習の所見",
+        "description": "小学校の総合的な学習の時間向けの所見を生成します",
+        "fields": [
+            {
+                "name": "grade",
+                "label": "学年",
+                "description": "生徒の学年（例: 6年生）",
+            },
+            {
+                "name": "research_content",
+                "label": "調べた内容（時代・場所）",
+                "description": "調べた時代や建物・場所（例: 室町時代の建造物、鹿苑寺）",
+            },
+            {
+                "name": "experience",
+                "label": "体験・気づき・まとめ方",
+                "description": "見学での体験や気づき、まとめ方（例: 金閣が金色に輝く姿に感動した、新聞にまとめた）",
+            },
+            {
+                "name": "target_length",
+                "label": "文字数目安",
+                "description": "所見の目安文字数（例: 90字）",
+            },
+        ],
+        "system_prompt": (
+            "あなたは小学校の担任教師です。総合的な学習の時間の所見文を書いてください。\n\n"
+            "【構成】\n"
+            "1文目：「〇〇（時代/内容）について興味をもち、〇〇（場所）を調べました。」\n"
+            "2文目：「実際に見学（し/をして）、〇〇（体験・気づき）しました。」またはガイドの説明から学んだこと\n"
+            "3文目：「〇〇（学んだこと・感じたこと）について（新聞/タブレット等）にまとめました。」\n"
+            "合計2〜3文が目安。\n\n"
+            "【文体・表現ルール】\n"
+            "- 書き出しは「〇〇について興味をもち、」から始める（全角スペースなし）\n"
+            "- 文末は「〜しました。」「〜ました。」（全て過去形）\n"
+            "- 具体的な体験・気づき・感動を含める\n"
+            "- 生徒名は使わない\n"
+            "- 「素敵です」「感心しました」等の教師の主観的感想は使わない\n"
+            "- 否定的表現・課題指摘は一切使わない\n\n"
+            "【学年別表記】\n"
+            "- 1〜2年生：全文ひらがなで書く（漢字不使用）\n"
+            "- 3年生以上：漢字仮名交じり文\n\n"
+            "【文字数】必ず{min_length}〜{max_length}字の範囲で書くこと\n"
+            + _sogoteki_examples_text
+        ),
+        "user_prompt_template": (
+            "以下の情報をもとに{grade}の総合的な学習の所見を書いてください。\n\n"
+            "調べた内容（時代・場所）:\n{research_content}\n\n"
+            "体験・気づき・まとめ方:\n{experience}\n\n"
             "文字数は必ず{min_length}〜{max_length}字の範囲に収めてください。\n"
             "所見文のみを出力してください（説明や前置きは不要です）。"
         ),
